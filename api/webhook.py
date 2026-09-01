@@ -14,11 +14,17 @@ import logging
 import os
 import sqlite3
 from contextlib import asynccontextmanager
+from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 
 from api import db
 from engines.rail_router import live_route_payment
+
+# Load repo-root .env on import so the standalone server (uvicorn api.webhook:app)
+# sees RAZORPAY_* secrets. Does not override vars already set (tests still win).
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 log = logging.getLogger(__name__)
 

@@ -12,8 +12,10 @@ import json
 import logging
 import os
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 import pandas as pd
+from dotenv import load_dotenv
 
 from api import db
 from engines.dunning import (
@@ -28,6 +30,10 @@ from engines.interest import section16_interest
 from engines.rail_router import live_route_payment
 from evaluation.lift import overdue_invoices
 from models import late_payment
+
+# Load repo-root .env so a standalone run sees Razorpay / LLM keys. Does not
+# override vars already set in the environment.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 log = logging.getLogger(__name__)
 
