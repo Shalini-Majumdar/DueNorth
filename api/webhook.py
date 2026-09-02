@@ -16,6 +16,8 @@ import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
+import sentry_sdk
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 
@@ -23,10 +25,19 @@ from api import db
 from engines.rail_router import live_route_payment
 
 # Load repo-root .env on import so the standalone server (uvicorn api.webhook:app)
-# sees RAZORPAY_* secrets. Does not override vars already set (tests still win).
+# sees RAZORPAY_* / WA_* / SENTRY_DSN. Does not override vars already set.
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
+# No-op when SENTRY_DSN is empty/unset — Sentry is never required.
+sentry_sdk.init(
+    dsn=os.environ.get("SENTRY_DSN", ""),
+    traces_sample_rate=0.1,
+    send_default_pii=False,
+)
+
 log = logging.getLogger(__name__)
+
+WHATSAPP_API_BASE = "https://graph.facebook.com/v20.0"
 
 # Overridable by tests (monkeypatch api.webhook.DB_PATH) before the TestClient
 # context is entered.
@@ -57,6 +68,56 @@ def _extract_invoice_id(payload: dict) -> str | None:
     return None
 
 
+# --- notifications ---------------------------------------------------------
+
+def notify_payment_received(invoice_id: str, amount: float) -> None:
+    """Send the supplier a WhatsApp "payment_received" notification.
+
+    Reads WA_TOKEN / WA_PHONE_ID / WA_RECIPIENT from the environment. If any is
+    missing, or the API call fails, it logs a warning and returns — never raises.
+    Only invoice_id and amount are ever logged (never the token or recipient).
+    """
+    token = os.environ.get("WA_TOKEN")
+    phone_id = os.environ.get("WA_PHONE_ID")
+    recipient = os.environ.get("WA_RECIPIENT")
+    if not (token and phone_id and recipient):
+        log.warning("WhatsApp not configured — skipping notification")
+        return
+
+    amount_text = f"Rs {amount:,.0f}"
+    try:
+        resp = httpx.post(
+            f"{WHATSAPP_API_BASE}/{phone_id}/messages",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "messaging_product": "whatsapp",
+                "to": recipient,
+                "type": "template",
+                "template": {
+                    "name": "payment_received",
+                    "language": {"code": "en"},
+                    "components": [
+                        {
+                            "type": "body",
+                            "parameters": [
+                                {"type": "text", "text": invoice_id},
+                                {"type": "text", "text": amount_text},
+                            ],
+                        }
+                    ],
+                },
+            },
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        log.info("WhatsApp notification sent for %s (%s)", invoice_id, amount_text)
+    except Exception as exc:  # noqa: BLE001 - notification failures must not raise
+        log.warning("WhatsApp notification failed: %s", str(exc))
+
+
 # --- event handlers ---------------------------------------------------------
 
 def handle_payment_captured(payload: dict) -> None:
@@ -70,6 +131,7 @@ def handle_payment_captured(payload: dict) -> None:
         return
     db.mark_invoice_paid(invoice_id, DB_PATH)
     db.log_dunning(invoice_id, "none", None, "payment_captured", None, DB_PATH)
+    notify_payment_received(invoice_id, existing["amount"] if existing else 0.0)
 
 
 def handle_link_expired(payload: dict) -> None:
@@ -127,11 +189,8 @@ def process_event(event_type: str, payload: dict, event_id: str) -> None:
         else:
             log.info("webhook: unhandled event type %s", event_type)
     except Exception as exc:  # noqa: BLE001 - background task must not crash
-        log.error(
-            "webhook: process_event failed event=%s type=%s",
-            event_id,
-            type(exc).__name__,
-        )
+        sentry_sdk.capture_exception(exc)
+        log.error("process_event failed for %s: %s", event_type, str(exc))
 
 
 # --- app -------------------------------------------------------------------

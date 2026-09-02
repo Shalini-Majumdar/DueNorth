@@ -15,12 +15,23 @@ import sys
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
+import sentry_sdk
 import streamlit as st
+from dotenv import load_dotenv
 
 # Allow `streamlit run app/dashboard.py` from the repo root.
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+
+load_dotenv(os.path.join(_ROOT, ".env"))
+
+# No-op when SENTRY_DSN is empty/unset — Sentry is never required for the app.
+sentry_sdk.init(
+    dsn=os.environ.get("SENTRY_DSN", ""),
+    traces_sample_rate=0.1,
+    send_default_pii=False,
+)
 
 from engines.interest import section16_interest
 from evaluation.lift import compute_lift, overdue_invoices

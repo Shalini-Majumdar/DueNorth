@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: duenorth-dashboard
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app/dashboard.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    envVars:
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+
+  - type: web
+    name: duenorth-webhook
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.webhook:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      - key: WA_TOKEN
+        sync: false
+      - key: WA_PHONE_ID
+        sync: false
+      - key: WA_RECIPIENT
+        sync: false

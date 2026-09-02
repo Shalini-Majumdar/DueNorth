@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+# Only collect the real test suite. Root-level manual verification scripts
+# (scripts/manual/*.py) are never picked up.
+testpaths = ["tests"]

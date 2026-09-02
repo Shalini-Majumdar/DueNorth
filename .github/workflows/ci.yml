@@ -1,0 +1,43 @@
+name: DueNorth CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        run: pytest -q
+        env:
+          RAZORPAY_KEY_ID: rzp_test_placeholder
+          RAZORPAY_KEY_SECRET: placeholder
+          RAZORPAY_WEBHOOK_SECRET: test_secret
+          GEMINI_API_KEY: ""
+          GROQ_API_KEY: ""
+          SENTRY_DSN: ""
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Trigger Render deploy
+        run: |
+          curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"

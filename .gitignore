@@ -41,6 +41,12 @@ data/synthetic_ledger.csv
 out/*.pdf
 out/*.xlsx
 
+# Ingestion artifacts
+data/quarantine.csv
+
+# Generated test fixtures (created by tests/conftest.py)
+tests/fixtures/
+
 # --- OS / editor ---
 .DS_Store
 Thumbs.db
