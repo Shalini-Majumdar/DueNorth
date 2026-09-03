@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 
 from api import db
+from api.routes import register_routes
 from engines.rail_router import live_route_payment
 
 # Load repo-root .env on import so the standalone server (uvicorn api.webhook:app)
@@ -202,6 +203,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# REST API + CORS for the React frontend (does not touch the /webhook route).
+register_routes(app)
 
 
 @app.post("/webhook")

@@ -47,6 +47,11 @@ data/quarantine.csv
 # Generated test fixtures (created by tests/conftest.py)
 tests/fixtures/
 
+# React frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
 # --- OS / editor ---
 .DS_Store
 Thumbs.db
