@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "shadcn": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "C:\\Users\\Shalini\\Projects\\DueNorth\\shadcn-mcp.cmd"
+      ]
+    }
+  }
+}

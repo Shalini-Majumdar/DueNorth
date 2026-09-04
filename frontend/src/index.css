@@ -1,16 +1,77 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-body {
-  background-color: #ffffff;
-  color: #292531;
-  font-family: 'Inter', system-ui, sans-serif;
+:root {
+  color-scheme: dark;
 }
 
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #f0faf6; }
-::-webkit-scrollbar-thumb { background: #74CDAC; border-radius: 3px; }
+html {
+  scroll-behavior: smooth;
+}
 
-html { scroll-behavior: smooth; }
+body {
+  background-color: #111C2A;
+  color: #E9EFF5;
+  font-family: 'Geist Variable', 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* A single, very faint cool light from the top — gives the navy depth without
+   reading as a gradient. Nothing else paints the background. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -20% -10% auto -10%;
+  height: 60vh;
+  z-index: -2;
+  pointer-events: none;
+  background: radial-gradient(60% 100% at 50% 0%, rgba(70, 130, 180, 0.13), transparent 70%);
+  filter: blur(90px);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #2C3F53;
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #3B5268; background-clip: content-box; }
+
+/* Tabular figures everywhere mono is used (money, ids, timestamps, counts) */
+.font-mono { font-feature-settings: "tnum" 1, "zero" 1; }
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* Keep browser autofill on the dark surface instead of its default cream */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #E9EFF5;
+  -webkit-box-shadow: 0 0 0 1000px #213141 inset;
+  caret-color: #E9EFF5;
+  transition: background-color 9999s ease-in-out 0s;
+}
+
+/* Native controls on dark */
+input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.62); cursor: pointer; }
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+/* Focus ring — one definition for the whole product */
+.focus-ring:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px #111C2A, 0 0 0 4px rgba(52, 211, 153, 0.45);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

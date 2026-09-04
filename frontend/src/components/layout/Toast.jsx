@@ -1,17 +1,19 @@
-import { AnimatePresence, motion } from "framer-motion";
-import { AlertCircle, CheckCircle, Info } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
+import { AlertTriangle, CheckCircle2, Info, XCircle } from "lucide-react";
 import { createContext, useCallback, useContext, useState } from "react";
 
-const ToastContext = createContext(() => {});
+import { DUR, EASE } from "@/ui/motion";
 
+const ToastContext = createContext(() => {});
 export function useToast() {
   return useContext(ToastContext);
 }
 
 const STYLE = {
-  success: { cls: "bg-mint-300 text-night-800", Icon: CheckCircle },
-  error: { cls: "bg-blush-300 text-night-800", Icon: AlertCircle },
-  info: { cls: "bg-sage-300 text-night-800", Icon: Info },
+  success: { rail: "bg-jade-400", icon: "text-jade-300", Icon: CheckCircle2 },
+  error: { rail: "bg-coral-400", icon: "text-coral-300", Icon: XCircle },
+  warn: { rail: "bg-amber-400", icon: "text-amber-300", Icon: AlertTriangle },
+  info: { rail: "bg-steel-400", icon: "text-steel-300", Icon: Info },
 };
 
 export function ToastProvider({ children }) {
@@ -20,29 +22,28 @@ export function ToastProvider({ children }) {
   const toast = useCallback((message, type = "info") => {
     const id = Math.random().toString(36).slice(2);
     setToasts((t) => [...t, { id, message, type }]);
-    setTimeout(() => {
-      setToasts((t) => t.filter((x) => x.id !== id));
-    }, 4000);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4400);
   }, []);
 
   return (
     <ToastContext.Provider value={toast}>
       {children}
-      <div className="pointer-events-none fixed right-4 top-4 z-[100] flex w-80 flex-col gap-2">
+      <div className="pointer-events-none fixed bottom-5 right-5 z-[120] flex w-[22rem] flex-col gap-2">
         <AnimatePresence>
           {toasts.map(({ id, message, type }) => {
-            const { cls, Icon } = STYLE[type] || STYLE.info;
+            const s = STYLE[type] || STYLE.info;
             return (
               <motion.div
                 key={id}
-                initial={{ opacity: 0, x: 60 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 60 }}
-                transition={{ type: "spring", stiffness: 300, damping: 25 }}
-                className={`pointer-events-auto flex items-start gap-2 rounded-lg px-4 py-3 text-sm shadow-sm ${cls}`}
+                initial={{ opacity: 0, y: 12, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.98 }}
+                transition={{ duration: DUR.md, ease: EASE }}
+                className="pointer-events-auto relative flex items-start gap-2.5 overflow-hidden rounded-lg bg-surface-raised py-3 pl-4 pr-3.5 text-sm shadow-lift ring-1 ring-inset ring-surface-line"
               >
-                <Icon size={18} className="mt-0.5 shrink-0" />
-                <span>{message}</span>
+                <span className={`absolute inset-y-0 left-0 w-[3px] ${s.rail}`} />
+                <s.Icon size={16} className={`mt-0.5 shrink-0 ${s.icon}`} />
+                <span className="text-ink-secondary">{message}</span>
               </motion.div>
             );
           })}

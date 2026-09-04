@@ -1,54 +1,62 @@
-import { motion } from "framer-motion";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { FileText, Minus, Plus } from "lucide-react";
 
-import { api } from "../api/client";
-import { useToast } from "../components/layout/Toast";
-import { formatCurrency } from "../utils/formatCurrency";
+import { api } from "@/api/client";
+import { useToast } from "@/components/layout/Toast";
+import { useApi } from "@/hooks/useApi";
+import {
+  Button,
+  ElasticSlider,
+  Eyebrow,
+  Field,
+  Input,
+  Money,
+  PageHeader,
+  Panel,
+  SectionHeader,
+  Skeleton,
+} from "@/ui";
 
-function isoDaysAgo(days) {
+function isoDaysAgo(n) {
   const d = new Date();
-  d.setUTCDate(d.getUTCDate() - days);
+  d.setDate(d.getDate() - n);
   return d.toISOString().slice(0, 10);
 }
-
-function daysBetween(iso) {
-  const then = new Date(iso + "T00:00:00Z").getTime();
-  const now = Date.now();
-  return Math.max(0, Math.round((now - then) / 86400000));
+function daysSince(iso) {
+  return Math.max(0, Math.round((Date.now() - new Date(iso + "T00:00:00").getTime()) / 86400000));
 }
 
 export default function InterestPage() {
   const toast = useToast();
+  const cfg = useApi(() => api.getConfig(), []);
   const [principal, setPrincipal] = useState(500000);
-  const [dueDate, setDueDate] = useState(isoDaysAgo(90));
-  const [daysOverdue, setDaysOverdue] = useState(90);
+  const [dueDate, setDueDate] = useState(isoDaysAgo(120));
+  const [days, setDays] = useState(120);
   const [result, setResult] = useState(null);
-  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState(false);
+  const timer = useRef(null);
 
-  const principalDisplay = useMemo(
+  const principalText = useMemo(
     () => new Intl.NumberFormat("en-IN").format(Number(principal) || 0),
     [principal],
   );
 
-  const onDueDate = (v) => {
-    setDueDate(v);
-    setDaysOverdue(daysBetween(v));
-  };
+  useEffect(() => {
+    clearTimeout(timer.current);
+    setPending(true);
+    timer.current = setTimeout(() => {
+      api
+        .calcInterest({ principal: Number(principal) || 0, due_date: dueDate, days_overdue: Number(days) || 0 })
+        .then(setResult)
+        .catch(() => setResult({ error: true }))
+        .finally(() => setPending(false));
+    }, 240);
+    return () => clearTimeout(timer.current);
+  }, [principal, dueDate, days]);
 
-  const calculate = async () => {
-    setBusy(true);
-    try {
-      const d = await api.calcInterest({
-        principal: Number(principal),
-        due_date: dueDate,
-        days_overdue: Number(daysOverdue),
-      });
-      setResult(d);
-    } catch (e) {
-      toast(e?.response?.data?.detail || "Calculation failed", "error");
-    } finally {
-      setBusy(false);
-    }
+  const onDue = (v) => {
+    setDueDate(v);
+    setDays(daysSince(v));
   };
 
   const generateNotice = async () => {
@@ -56,136 +64,185 @@ export default function InterestPage() {
       const r = await api.prefillDemand({
         principal: Number(principal),
         due_date: dueDate,
-        days_overdue: Number(daysOverdue),
+        days_overdue: Number(days),
       });
-      toast(`Draft demand notice generated — ${r.status}`, "success");
+      toast(`Draft notice prepared — ${r.status.replace(/_/g, " ").toLowerCase()}. Nothing has been filed.`, "success");
     } catch (e) {
-      toast(e?.response?.data?.detail || "Could not generate notice", "error");
+      toast(e?.response?.data?.detail || "Could not prepare notice", "error");
     }
   };
 
+  const bank = ((cfg.data?.bank_rate ?? 0.055) * 100).toFixed(2);
+
   return (
-    <div>
-      <h2 className="mb-6 text-lg font-semibold text-night-800">
-        Section 16 Interest — Live Demo
-      </h2>
+    <div className="mx-auto max-w-6xl">
+      <PageHeader
+        title="Interest calculator"
+        subtitle="Section 16 compound interest with monthly rests, at three times the RBI Bank Rate."
+      />
 
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
-        <div className="rounded-xl border border-sage-200 bg-white p-6">
-          <label className="block text-sm font-medium text-night-800">Principal (Rs)</label>
-          <input
-            inputMode="numeric"
-            value={principalDisplay}
-            onChange={(e) => setPrincipal(e.target.value.replace(/[^\d]/g, ""))}
-            className="mt-1 w-full rounded-lg border border-sage-300 px-3 py-2.5 font-mono text-sm outline-none focus:border-mint-300 focus:ring-2 focus:ring-mint-100"
-          />
-
-          <label className="mt-4 block text-sm font-medium text-night-800">
-            Invoice Due Date
-          </label>
-          <input
-            type="date"
-            value={dueDate}
-            onChange={(e) => onDueDate(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-sage-300 px-3 py-2.5 text-sm outline-none focus:border-mint-300 focus:ring-2 focus:ring-mint-100"
-          />
-
-          <label className="mt-4 block text-sm font-medium text-night-800">
-            Days Overdue
-          </label>
-          <input
-            type="number"
-            min={0}
-            value={daysOverdue}
-            onChange={(e) => setDaysOverdue(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-sage-300 px-3 py-2.5 text-sm outline-none focus:border-mint-300 focus:ring-2 focus:ring-mint-100"
-          />
-
-          <button
-            onClick={calculate}
-            disabled={busy}
-            className="mt-5 w-full rounded-lg bg-mint-300 px-4 py-2.5 text-sm font-semibold text-night-800 transition-colors hover:bg-mint-400 disabled:opacity-60"
-          >
-            {busy ? "Calculating…" : "Calculate"}
-          </button>
-          <p className="mt-2 text-xs text-sage-400">
-            Statutory rate: 3x RBI Bank Rate (currently 16.50%)
-          </p>
-
-          <div className="mt-6 border-l-4 border-sage-400 bg-sage-100 p-3 text-xs text-night-800">
-            Section 16 interest applies only to Micro/Small Udyam-registered
-            suppliers. If you are registered as Medium or are unregistered,
-            interest cannot be legally claimed under this provision.
-          </div>
-        </div>
-
-        <div>
-          {result ? (
-            <motion.div
-              initial={{ opacity: 0, x: 30 }}
-              animate={{ opacity: 1, x: 0 }}
-              className="rounded-xl border border-sage-200 bg-white p-6"
-            >
-              <p className="text-sm text-sage-400">Interest Accrued</p>
-              <p className="text-2xl font-semibold text-night-800">
-                {formatCurrency(result.interest, { decimals: true })}
-              </p>
-              <p className="mt-3 text-sm text-sage-400">Total Due</p>
-              <p className="text-3xl font-bold text-mint-400">
-                {formatCurrency(result.total_due, { decimals: true })}
-              </p>
-              <span className="mt-3 inline-flex rounded-full bg-mint-100 px-2.5 py-0.5 text-xs font-medium text-mint-500">
-                {(result.statutory_rate_pa * 100).toFixed(2)}% p.a. · monthly rests
+      <div className="grid gap-8 lg:grid-cols-[340px_minmax(0,1fr)]">
+        {/* Inputs */}
+        <Panel className="h-fit p-5">
+          <Field label="Principal">
+            <div className="relative">
+              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 font-mono text-sm text-ink-faint">
+                ₹
               </span>
+              <Input
+                inputMode="numeric"
+                value={principalText}
+                onChange={(e) => setPrincipal(e.target.value.replace(/[^\d]/g, ""))}
+                className="pl-7 font-mono tnum"
+              />
+            </div>
+          </Field>
 
-              <div className="mt-5 overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-xs uppercase tracking-wide text-sage-400">
-                      <th className="py-2">From</th>
-                      <th className="py-2">To</th>
-                      <th className="py-2 text-right">Opening</th>
-                      <th className="py-2 text-right">Interest</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(result.schedule || []).map((s, i) => (
-                      <motion.tr
-                        key={i}
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: i * 0.1 }}
-                        className={i % 2 ? "bg-mint-50" : "bg-white"}
-                      >
-                        <td className="py-1.5 font-mono text-xs">{s.from}</td>
-                        <td className="py-1.5 font-mono text-xs">{s.to}</td>
-                        <td className="py-1.5 text-right font-mono text-xs">
-                          {formatCurrency(s.opening_balance)}
-                        </td>
-                        <td className="py-1.5 text-right font-mono text-xs">
-                          {formatCurrency(s.interest_this_period, { decimals: true })}
-                        </td>
-                      </motion.tr>
-                    ))}
-                  </tbody>
-                </table>
+          <Field label="Invoice due date" className="mt-4">
+            <Input type="date" value={dueDate} onChange={(e) => onDue(e.target.value)} className="font-mono" />
+          </Field>
+
+          <Field label="Days overdue" className="mt-4">
+            <Input
+              type="number"
+              min={0}
+              max={1095}
+              value={days}
+              onChange={(e) => setDays(e.target.value)}
+              className="font-mono tnum"
+            />
+          </Field>
+
+          <div className="mt-3">
+            <ElasticSlider
+              value={Math.min(Number(days) || 0, 365)}
+              onChange={setDays}
+              min={0}
+              max={365}
+              leftIcon={<Minus size={12} />}
+              rightIcon={<Plus size={12} />}
+            />
+            <div className="flex justify-between px-1 text-2xs text-ink-faint">
+              <span>0</span>
+              <span>drag to explore</span>
+              <span>365</span>
+            </div>
+          </div>
+
+          <dl className="mt-6 space-y-2 border-t border-surface-line pt-4 text-2xs">
+            <div className="flex justify-between">
+              <dt className="text-ink-faint">RBI Bank Rate</dt>
+              <dd className="font-mono tnum text-ink-muted">{bank}%</dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-ink-faint">Statutory multiple</dt>
+              <dd className="font-mono tnum text-ink-muted">3×</dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-ink-faint">Effective rate</dt>
+              <dd className="font-mono tnum text-jade-300">
+                {result && !result.error ? (result.statutory_rate_pa * 100).toFixed(2) : "—"}% p.a.
+              </dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-ink-faint">Rest frequency</dt>
+              <dd className="text-ink-muted">Monthly</dd>
+            </div>
+          </dl>
+
+          <p className="mt-4 border-l-2 border-amber-400/50 pl-3 text-2xs leading-relaxed text-ink-muted">
+            Applies only to Micro and Small suppliers holding a valid Udyam registration at the time of supply.
+          </p>
+        </Panel>
+
+        {/* Result + auditable trail */}
+        <div>
+          <SectionHeader title="Result" hint={pending ? "recalculating…" : undefined} />
+
+          {!result ? (
+            <div className="space-y-3">
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="h-10 w-56" />
+            </div>
+          ) : result.error ? (
+            <p className="text-sm text-ink-muted">Enter a valid principal and date to calculate.</p>
+          ) : (
+            <>
+              <div className="grid gap-6 border-y border-surface-line py-6 sm:grid-cols-3">
+                <div>
+                  <Eyebrow>Principal</Eyebrow>
+                  <div className="mt-2">
+                    <Money amount={result.principal} size="xl" decimals />
+                  </div>
+                </div>
+                <div>
+                  <Eyebrow>Interest accrued</Eyebrow>
+                  <div className="mt-2">
+                    <Money amount={result.interest} tone="warn" size="xl" decimals animate />
+                  </div>
+                </div>
+                <div>
+                  <Eyebrow>Total due</Eyebrow>
+                  <div className="mt-2">
+                    <Money amount={result.total_due} tone="recovered" size="xl" decimals animate />
+                  </div>
+                </div>
               </div>
 
-              <button
-                onClick={generateNotice}
-                className="mt-5 w-full rounded-lg bg-night-800 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-night-700"
-              >
-                Generate Demand Notice
-              </button>
-              <p className="mt-2 text-xs text-sage-400">
-                This is a draft under MSMED Act 2006 ss.15-16. It requires human
-                review before sending.
+              <p className="mt-3 text-xs text-ink-muted">
+                Interest runs from the appointed day{" "}
+                <span className="font-mono tnum text-ink-secondary">{result.appointed_day}</span> to{" "}
+                <span className="font-mono tnum text-ink-secondary">{result.end_date}</span> over{" "}
+                <span className="font-mono tnum text-ink-secondary">{(result.schedule || []).length}</span>{" "}
+                monthly rests.
               </p>
-            </motion.div>
-          ) : (
-            <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-sage-300 p-10 text-center text-sm text-sage-400">
-              Enter values and press Calculate to see the interest breakdown.
-            </div>
+
+              {(result.schedule || []).length > 0 && (
+                <div className="mt-7">
+                  <SectionHeader title="Calculation trail" hint="each monthly rest, in order" />
+                  <div className="grid grid-cols-[1fr_1fr_auto_auto] gap-4 border-y border-surface-line py-2 text-2xs font-medium uppercase tracking-wider text-ink-faint">
+                    <span>From</span>
+                    <span>To</span>
+                    <span className="text-right">Opening balance</span>
+                    <span className="text-right">Interest</span>
+                  </div>
+                  <div className="max-h-[22rem] divide-y divide-surface-line overflow-y-auto">
+                    {result.schedule.map((s, i) => (
+                      <div
+                        key={i}
+                        className="grid grid-cols-[1fr_1fr_auto_auto] gap-4 py-2 font-mono text-xs tnum"
+                      >
+                        <span className="text-ink-faint">{s.from}</span>
+                        <span className="text-ink-faint">{s.to}</span>
+                        <span className="text-right text-ink-muted">
+                          ₹{Number(s.opening_balance).toLocaleString("en-IN")}
+                        </span>
+                        <span className="text-right text-jade-300">
+                          +₹{Number(s.interest_this_period).toFixed(2)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-[1fr_1fr_auto_auto] gap-4 border-t border-surface-edge py-2.5 font-mono text-xs tnum">
+                    <span className="col-span-3 text-ink-muted">Total interest</span>
+                    <span className="text-right font-semibold text-jade-300">
+                      +₹{Number(result.interest).toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-7 flex flex-wrap items-center justify-between gap-3 border-t border-surface-line pt-5">
+                <p className="max-w-md text-2xs leading-relaxed text-ink-faint">
+                  An engineering calculation under MSMED Act 2006 ss.15–16 — not legal advice. Have a chartered
+                  accountant review any notice before it is filed.
+                </p>
+                <Button variant="secondary" size="sm" onClick={generateNotice}>
+                  <FileText />
+                  Prepare demand notice
+                </Button>
+              </div>
+            </>
           )}
         </div>
       </div>
