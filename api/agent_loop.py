@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -29,7 +29,7 @@ from engines.interest import appointed_day as compute_appointed_day
 from engines.interest import section16_interest
 from engines.rail_router import live_route_payment
 from evaluation.lift import overdue_invoices
-from models import late_payment
+from models import late_payment, ptp_reliability
 
 # Load repo-root .env so a standalone run sees Razorpay / LLM keys. Does not
 # override vars already set in the environment.
@@ -41,6 +41,8 @@ DEFAULT_LEDGER_PATH = "data/synthetic_ledger.csv"
 DEFAULT_CONFIG_PATH = "config/config.json"
 OUTPUT_DIR = "out"
 
+# Fallback used only when no supplier has been onboarded into the database.
+# Once POST /api/onboard has run, run_agent_loop reads the stored row instead.
 TEST_SUPPLIER = {
     "name": "DueNorth Test Supplier",
     "udyam_status": "Small",
@@ -48,6 +50,41 @@ TEST_SUPPLIER = {
     "flow": "full",
     "statutory_eligible": True,
 }
+
+# --- PtP-driven follow-up cadence -------------------------------------------
+# The regressor predicts how reliably this customer keeps a promise to pay.
+# Reliable payers get room; unreliable ones get chased again tomorrow.
+PTP_SCHEDULE = (
+    (0.70, 7),   # reliable  -> follow up in a week
+    (0.40, 3),   # uncertain -> mid-week nudge
+    (0.00, 1),   # unreliable-> chase again tomorrow
+)
+
+
+def follow_up_days_for(reliability: float) -> int:
+    """Map predicted PtP reliability to the number of days until the next chase."""
+    for floor, days in PTP_SCHEDULE:
+        if reliability >= floor:
+            return days
+    return PTP_SCHEDULE[-1][1]
+
+
+def _resolve_supplier(supplier_id: str | None, db_path: str) -> dict:
+    """Load the onboarded supplier, falling back to TEST_SUPPLIER.
+
+    Keeps the loop working on a fresh database (and in every existing test)
+    while letting a real onboarding drive the statutory flow once it exists.
+    """
+    stored = db.get_supplier(supplier_id or db.DEFAULT_SUPPLIER_ID, db_path)
+    if stored is None:
+        return dict(TEST_SUPPLIER)
+    return {
+        "name": stored["name"],
+        "udyam_status": stored["udyam_status"],
+        "udyam_number": stored["udyam_number"],
+        "flow": stored["flow"],
+        "statutory_eligible": stored["statutory_eligible"],
+    }
 
 
 def _load_config(path: str = DEFAULT_CONFIG_PATH) -> dict:
@@ -88,14 +125,14 @@ def _due_date(raw) -> date:
         return datetime.now(UTC).date()
 
 
-def _to_db_invoice(row: dict) -> dict:
+def _to_db_invoice(row: dict, supplier: dict) -> dict:
     return {
         "invoice_id": row["invoice_id"],
         "customer_id": row["customer_id"],
         "amount": float(row["amount"]),
         "days_past_due": int(row["days_past_due"]),
         "status": row["status"],
-        "statutory_eligible": TEST_SUPPLIER["statutory_eligible"],
+        "statutory_eligible": supplier["statutory_eligible"],
         "sector": row.get("sector"),
         "due_date": str(row.get("due_date", ""))[:10],
     }
@@ -105,6 +142,7 @@ def run_agent_loop(
     ledger_path: str = DEFAULT_LEDGER_PATH,
     db_path: str = db.DEFAULT_DB_PATH,
     dry_run: bool = True,
+    supplier_id: str | None = None,
 ) -> dict:
     """Process every overdue invoice through the safety gates and dunning steps.
 
@@ -115,7 +153,8 @@ def run_agent_loop(
     db.init_db(db_path)
     config = _load_config()
     clf = late_payment.load_model()
-    supplier = dict(TEST_SUPPLIER)
+    ptp_model = ptp_reliability.load_model()
+    supplier = _resolve_supplier(supplier_id, db_path)
 
     gemini_key = os.environ.get("GEMINI_API_KEY")
     groq_key = os.environ.get("GROQ_API_KEY")
@@ -130,6 +169,7 @@ def run_agent_loop(
         "held_for_human": 0,
         "escalated_msefc": 0,
         "skipped_paid": 0,
+        "follow_ups_scheduled": 0,
         "dry_run": dry_run,
     }
 
@@ -137,7 +177,7 @@ def run_agent_loop(
         counts["total_processed"] += 1
         invoice_id = raw["invoice_id"]
 
-        invoice = _to_db_invoice(raw)
+        invoice = _to_db_invoice(raw, supplier)
         db.upsert_invoice(invoice, db_path)
         already_done = _has_dunning_log(db_path, invoice_id)
 
@@ -207,7 +247,19 @@ def run_agent_loop(
                 counts["skipped_paid"] += 1
             continue
 
-        # Step 7 — personalise the message
+        # Step 7a — PtP reliability decides when we come back, not whether we
+        # act now. Scored only for invoices we are actually going to chase.
+        reliability = ptp_reliability.score_ptp(invoice, ptp_model)
+        follow_up_days = follow_up_days_for(reliability)
+        follow_up_on = (today + timedelta(days=follow_up_days)).isoformat()
+        schedule = {
+            "ptp_reliability": round(reliability, 4),
+            "follow_up_days": follow_up_days,
+            "follow_up_on": follow_up_on,
+        }
+        counts["follow_ups_scheduled"] += 1
+
+        # Step 7b — personalise the message
         payment_url = f"https://rzp.io/dry-run/{invoice_id}"
         context = {
             "buyer_name": invoice["buyer_name"],
@@ -232,7 +284,10 @@ def run_agent_loop(
         # Step 8 — send (or, in dry-run, just log)
         if dry_run:
             if not already_done:
-                db.log_dunning(invoice_id, step, message, "dry_run_message", None, db_path)
+                db.log_dunning(
+                    invoice_id, step, message, "dry_run_message", None, db_path,
+                    **schedule,
+                )
         else:
             result = live_route_payment(invoice)
             rail = result.get("rail")
@@ -240,7 +295,9 @@ def run_agent_loop(
             razorpay_id = result.get("id") or result.get("va_id")
             if rail == "failed":
                 action = "payment_instrument_failed"
-            db.log_dunning(invoice_id, step, message, action, razorpay_id, db_path)
+            db.log_dunning(
+                invoice_id, step, message, action, razorpay_id, db_path, **schedule
+            )
             db.upsert_invoice(
                 {
                     "invoice_id": invoice_id,

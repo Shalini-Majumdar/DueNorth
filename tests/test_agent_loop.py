@@ -62,7 +62,7 @@ def test_returns_all_keys(env):
     result = agent_loop.run_agent_loop(ledger_path, db_path, dry_run=True)
     assert set(result) == {
         "total_processed", "dunning_sent", "held_for_human",
-        "escalated_msefc", "skipped_paid", "dry_run",
+        "escalated_msefc", "skipped_paid", "follow_ups_scheduled", "dry_run",
     }
 
 
@@ -144,3 +144,101 @@ def test_second_run_is_idempotent(env):
     assert _count(db_path, "dunning_log") == dunning_after_1
     assert _count(db_path, "human_review") == hr_after_1
     assert _count(db_path, "invoices") == invoices_after_1
+
+
+# --- PtP-driven follow-up scheduling -----------------------------------------
+
+def test_follow_up_days_for_maps_reliability_to_cadence():
+    assert agent_loop.follow_up_days_for(0.95) == 7
+    assert agent_loop.follow_up_days_for(0.70) == 7
+    assert agent_loop.follow_up_days_for(0.55) == 3
+    assert agent_loop.follow_up_days_for(0.40) == 3
+    assert agent_loop.follow_up_days_for(0.10) == 1
+    assert agent_loop.follow_up_days_for(0.0) == 1
+
+
+def test_sent_dunning_rows_carry_a_follow_up_schedule(env):
+    ledger_path, db_path = env
+    result = agent_loop.run_agent_loop(ledger_path, db_path, dry_run=True)
+    if result["dunning_sent"] == 0:
+        pytest.skip("ledger fixture produced no sends")
+
+    conn = db.get_connection(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT ptp_reliability, follow_up_days, follow_up_on FROM dunning_log "
+            "WHERE action = 'dry_run_message'"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert rows
+    for row in rows:
+        assert 0.0 <= row["ptp_reliability"] <= 1.0
+        assert row["follow_up_days"] in (1, 3, 7)
+        assert row["follow_up_on"]
+
+
+def test_held_rows_have_no_follow_up_schedule(env):
+    ledger_path, db_path = env
+    agent_loop.run_agent_loop(ledger_path, db_path, dry_run=True)
+    conn = db.get_connection(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT follow_up_days FROM dunning_log WHERE action IN ('held', 'skipped')"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert all(row["follow_up_days"] is None for row in rows)
+
+
+# --- supplier resolution ------------------------------------------------------
+
+def test_falls_back_to_test_supplier_when_none_onboarded(env):
+    _, db_path = env
+    db.init_db(db_path)
+    resolved = agent_loop._resolve_supplier(None, db_path)
+    assert resolved["name"] == agent_loop.TEST_SUPPLIER["name"]
+    assert resolved["flow"] == "full"
+
+
+def test_uses_onboarded_supplier_when_present(env):
+    _, db_path = env
+    db.init_db(db_path)
+    db.upsert_supplier(
+        {
+            "name": "Kamal Engineering",
+            "udyam_status": "Medium",
+            "udyam_number": None,
+            "flow": "reminders_only",
+            "statutory_eligible": False,
+        },
+        db_path=db_path,
+    )
+    resolved = agent_loop._resolve_supplier(None, db_path)
+    assert resolved["name"] == "Kamal Engineering"
+    assert resolved["flow"] == "reminders_only"
+    assert resolved["statutory_eligible"] is False
+
+
+def test_medium_supplier_marks_invoices_not_statutory_eligible(env):
+    ledger_path, db_path = env
+    db.init_db(db_path)
+    db.upsert_supplier(
+        {
+            "name": "Kamal Engineering",
+            "udyam_status": "Medium",
+            "udyam_number": None,
+            "flow": "reminders_only",
+            "statutory_eligible": False,
+        },
+        db_path=db_path,
+    )
+    agent_loop.run_agent_loop(ledger_path, db_path, dry_run=True)
+    conn = db.get_connection(db_path)
+    try:
+        rows = conn.execute("SELECT statutory_eligible FROM invoices").fetchall()
+    finally:
+        conn.close()
+    assert rows
+    assert all(row["statutory_eligible"] == 0 for row in rows)

@@ -26,6 +26,7 @@ from api import db
 from data.ingest import ingest
 from engines.escalation import prefill_demand_notice
 from engines.interest import appointed_day, section16_interest
+from engines.udyam import onboard
 from evaluation.lift import compute_lift, overdue_invoices
 from models import late_payment
 from models.late_payment import _engineer as _engineer_features
@@ -86,6 +87,12 @@ class PrefillRequest(BaseModel):
 
 class ReviewActionRequest(BaseModel):
     action: str  # approve | escalate | hold
+
+
+class OnboardRequest(BaseModel):
+    name: str
+    udyam_status: str  # Micro | Small | Medium | not_registered
+    udyam_number: str | None = None
 
 
 _REVIEW_STATUS = {
@@ -219,7 +226,8 @@ def dunning_run() -> dict:
 def audit_log(invoice_id: str | None = None, action: str | None = None) -> list[dict]:
     _ensure_db()
     query = (
-        "SELECT id, invoice_id, step, message_sent, action, razorpay_id, ts "
+        "SELECT id, invoice_id, step, message_sent, action, razorpay_id, "
+        "ptp_reliability, follow_up_days, follow_up_on, ts "
         "FROM dunning_log"
     )
     clauses, params = [], []
@@ -245,10 +253,67 @@ def audit_log(invoice_id: str | None = None, action: str | None = None) -> list[
             "step": r["step"],
             "action": r["action"],
             "razorpay_id": r["razorpay_id"],
+            "ptp_reliability": r["ptp_reliability"],
+            "follow_up_days": r["follow_up_days"],
+            "follow_up_on": r["follow_up_on"],
             "ts": r["ts"],
         }
         for r in rows
     ]
+
+
+@router.post("/onboard")
+def onboard_endpoint(body: OnboardRequest) -> dict:
+    """Run the Udyam gate (engines.udyam.onboard) and persist the supplier.
+
+    This is the first gate in the pipeline: it decides whether the supplier gets
+    the full statutory flow (Micro/Small with a valid URN) or the reminders-only
+    flow (Medium / unregistered — no Section 16 interest, no MSEFC).
+    """
+    _ensure_db()
+    try:
+        result = onboard(
+            {
+                "name": body.name.strip(),
+                "udyam_status": body.udyam_status,
+                "udyam_number": (body.udyam_number or "").strip() or None,
+            }
+        )
+    except ValueError as exc:
+        # A rejected URN is a business outcome, not a server fault.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    supplier_id = db.upsert_supplier(result, db_path=DB_PATH)
+    log.info("supplier onboarded: flow=%s", result["flow"])
+
+    return {
+        "supplier_id": supplier_id,
+        "name": result["name"],
+        "udyam_status": result["udyam_status"],
+        "flow": result["flow"],
+        "statutory_eligible": result["statutory_eligible"],
+        "explanation": (
+            "Micro/Small with a valid Udyam registration: DueNorth may accrue "
+            "Section 16 compound interest at 3x the RBI Bank Rate and prefill an "
+            "MSEFC demand notice for your approval."
+            if result["statutory_eligible"]
+            else "Medium or unregistered: statutory interest and MSEFC "
+            "escalation do not apply under the MSMED Act 2006. DueNorth will "
+            "send payment reminders only."
+        ),
+    }
+
+
+@router.get("/supplier")
+def supplier_endpoint() -> dict:
+    """Return the onboarded supplier, or the flow the agent loop falls back to."""
+    _ensure_db()
+    stored = db.get_supplier(db_path=DB_PATH)
+    if stored is None:
+        from api.agent_loop import TEST_SUPPLIER
+
+        return {**TEST_SUPPLIER, "supplier_id": None, "onboarded": False}
+    return {**stored, "onboarded": True}
 
 
 @router.get("/config")

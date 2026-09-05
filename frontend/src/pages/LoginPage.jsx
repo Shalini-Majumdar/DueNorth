@@ -3,11 +3,20 @@ import { ArrowRight, CheckCircle2, XCircle } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
+import { api } from "@/api/client";
 import BlurText from "@/components/BlurText";
 import { Button, DUR, EASE, Eyebrow, Field, Input, PasswordInput, Step, Stepper } from "@/ui";
 import { URN_REGEX } from "@/utils/constants";
 
 const STATUSES = ["Micro", "Small", "Medium", "Not Registered"];
+
+// The API speaks the engine's vocabulary; the form speaks the user's.
+const STATUS_TO_API = {
+  Micro: "Micro",
+  Small: "Small",
+  Medium: "Medium",
+  "Not Registered": "not_registered",
+};
 
 function Mark() {
   return (
@@ -132,14 +141,42 @@ function Register({ onDone, onSignIn }) {
   const [status, setStatus] = useState("Micro");
   const [urn, setUrn] = useState("");
 
+  // Server verdict from POST /api/onboard — this, not the local regex, is what
+  // decides the flow. The regex below is only inline feedback while typing.
+  const [verdict, setVerdict] = useState(null);
+  const [error, setError] = useState("");
+
   const urnRequired = status === "Micro" || status === "Small";
   const urnValid = useMemo(() => URN_REGEX.test(urn.trim()), [urn]);
-  const fullCover = urnRequired && urnValid;
+  const fullCover = verdict?.statutory_eligible === true;
 
   const canAdvance = (step) => {
     if (step === 1) return email.length > 3;
     if (step === 2) return biz.length > 1 && (!urnRequired || urnValid);
     return true;
+  };
+
+  // Leaving step 2 runs the real Udyam gate (engines/udyam.onboard) on the
+  // server. A malformed URN comes back 422 and blocks the transition.
+  const beforeAdvance = async (step) => {
+    if (step !== 2) return true;
+    setError("");
+    try {
+      const result = await api.onboard({
+        name: biz.trim(),
+        udyam_status: STATUS_TO_API[status],
+        udyam_number: urnRequired ? urn.trim() : null,
+      });
+      setVerdict(result);
+      return true;
+    } catch (err) {
+      setVerdict(null);
+      setError(
+        err?.response?.data?.detail ||
+          "Could not verify your Udyam registration. Check your connection and try again.",
+      );
+      return false;
+    }
   };
 
   return (
@@ -156,6 +193,7 @@ function Register({ onDone, onSignIn }) {
 
       <Stepper
         canAdvance={canAdvance}
+        beforeAdvance={beforeAdvance}
         completeText="Open dashboard"
         onFinalStepCompleted={() => {
           localStorage.setItem("duenorth_email", email || "founder@business.in");
@@ -225,6 +263,17 @@ function Register({ onDone, onSignIn }) {
                 ) : null}
               </div>
             </Field>
+            {error ? (
+              <motion.p
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: DUR.sm }}
+                role="alert"
+                className="text-[13px] leading-relaxed text-coral-300"
+              >
+                {error}
+              </motion.p>
+            ) : null}
           </div>
         </Step>
 
@@ -237,13 +286,22 @@ function Register({ onDone, onSignIn }) {
               fullCover ? "bg-jade-400/8 ring-jade-400/30" : "bg-steel-400/8 ring-steel-400/30"
             }`}
           >
-            <p className={`text-sm font-semibold ${fullCover ? "text-jade-300" : "text-steel-300"}`}>
-              {fullCover ? "Full statutory cover" : "Reminders only"}
-            </p>
+            <div className="flex items-baseline justify-between gap-3">
+              <p className={`text-sm font-semibold ${fullCover ? "text-jade-300" : "text-steel-300"}`}>
+                {fullCover ? "Full statutory cover" : "Reminders only"}
+              </p>
+              {verdict ? (
+                <span className="font-mono text-2xs uppercase tracking-[0.08em] text-ink-faint">
+                  flow: {verdict.flow}
+                </span>
+              ) : null}
+            </div>
             <p className="mt-1.5 text-[13px] leading-relaxed text-ink-secondary">
-              {fullCover
-                ? "You are eligible for Section 16 compound interest recovery and MSEFC / Samadhaan escalation support."
-                : "Medium and unregistered suppliers can use dunning and payment links, but Chapter V of the MSMED Act does not apply — no statutory interest and no MSEFC route."}
+              {verdict?.explanation ||
+                "Medium and unregistered suppliers can use dunning and payment links, but Chapter V of the MSMED Act does not apply — no statutory interest and no MSEFC route."}
+            </p>
+            <p className="mt-3 border-t border-surface-line/60 pt-3 text-2xs leading-relaxed text-ink-faint">
+              Verified against your Udyam registration by DueNorth&apos;s compliance engine.
             </p>
           </motion.div>
         </Step>

@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS dunning_log (
     message_sent    TEXT,
     action          TEXT,
     razorpay_id     TEXT,
+    ptp_reliability REAL,
+    follow_up_days  INTEGER,
+    follow_up_on    TEXT,
     ts              TEXT DEFAULT (datetime('now'))
 );
 
@@ -50,6 +53,17 @@ CREATE TABLE IF NOT EXISTS webhook_events (
     invoice_id      TEXT,
     payload_hash    TEXT,
     processed_at    TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS suppliers (
+    supplier_id     TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    udyam_status    TEXT NOT NULL,
+    udyam_number    TEXT,
+    flow            TEXT NOT NULL,
+    statutory_eligible INTEGER NOT NULL,
+    created_at      TEXT DEFAULT (datetime('now')),
+    updated_at      TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS human_review (
@@ -93,12 +107,34 @@ def get_connection(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     return conn
 
 
+# Columns added after the first release. CREATE TABLE IF NOT EXISTS will not
+# add them to a database that already exists, so init_db patches them in.
+_ADDED_COLUMNS = {
+    "dunning_log": (
+        ("ptp_reliability", "REAL"),
+        ("follow_up_days", "INTEGER"),
+        ("follow_up_on", "TEXT"),
+    ),
+}
+
+
+def _apply_column_migrations(conn: sqlite3.Connection) -> None:
+    for table, columns in _ADDED_COLUMNS.items():
+        existing = {
+            row["name"] for row in conn.execute(f"PRAGMA table_info({table})")
+        }
+        for name, decl in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
 def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
     """Create all tables if they do not exist. Safe to call on every startup."""
     conn = get_connection(db_path)
     try:
         with conn:
             conn.executescript(_SCHEMA)
+            _apply_column_migrations(conn)
     finally:
         conn.close()
 
@@ -178,16 +214,29 @@ def log_dunning(
     action: str,
     razorpay_id: str | None,
     db_path: str = DEFAULT_DB_PATH,
+    *,
+    ptp_reliability: float | None = None,
+    follow_up_days: int | None = None,
+    follow_up_on: str | None = None,
 ) -> None:
-    """Insert a row into dunning_log."""
+    """Insert a row into dunning_log.
+
+    ptp_reliability / follow_up_days / follow_up_on carry the PtP model's
+    follow-up schedule for this action; they are None for actions that do not
+    send a message (holds, skips).
+    """
     conn = get_connection(db_path)
     try:
         with conn:
             conn.execute(
                 "INSERT INTO dunning_log "
-                "(invoice_id, step, message_sent, action, razorpay_id) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (invoice_id, step, message, action, razorpay_id),
+                "(invoice_id, step, message_sent, action, razorpay_id, "
+                "ptp_reliability, follow_up_days, follow_up_on) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    invoice_id, step, message, action, razorpay_id,
+                    ptp_reliability, follow_up_days, follow_up_on,
+                ),
             )
     finally:
         conn.close()
@@ -247,3 +296,73 @@ def add_human_review(
             )
     finally:
         conn.close()
+
+
+DEFAULT_SUPPLIER_ID = "default"
+
+_SUPPLIER_COLUMNS = (
+    "name",
+    "udyam_status",
+    "udyam_number",
+    "flow",
+    "statutory_eligible",
+)
+
+
+def upsert_supplier(
+    supplier: dict,
+    supplier_id: str = DEFAULT_SUPPLIER_ID,
+    db_path: str = DEFAULT_DB_PATH,
+) -> str:
+    """Insert or update the onboarded supplier. Returns the supplier_id.
+
+    `supplier` is the dict returned by engines.udyam.onboard(), so it already
+    carries flow and statutory_eligible.
+    """
+    values = [
+        int(bool(supplier.get(c))) if c == "statutory_eligible" else supplier.get(c)
+        for c in _SUPPLIER_COLUMNS
+    ]
+    conn = get_connection(db_path)
+    try:
+        with conn:
+            exists = conn.execute(
+                "SELECT 1 FROM suppliers WHERE supplier_id = ?", (supplier_id,)
+            ).fetchone()
+            if exists:
+                set_clause = ", ".join(f"{c} = ?" for c in _SUPPLIER_COLUMNS)
+                conn.execute(
+                    f"UPDATE suppliers SET {set_clause}, "
+                    "updated_at = datetime('now') WHERE supplier_id = ?",
+                    [*values, supplier_id],
+                )
+            else:
+                cols = ["supplier_id", *_SUPPLIER_COLUMNS]
+                placeholders = ", ".join("?" for _ in cols)
+                conn.execute(
+                    f"INSERT INTO suppliers ({', '.join(cols)}) "
+                    f"VALUES ({placeholders})",
+                    [supplier_id, *values],
+                )
+    finally:
+        conn.close()
+    return supplier_id
+
+
+def get_supplier(
+    supplier_id: str = DEFAULT_SUPPLIER_ID,
+    db_path: str = DEFAULT_DB_PATH,
+) -> dict | None:
+    """Return the stored supplier as a dict, or None if it was never onboarded."""
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM suppliers WHERE supplier_id = ?", (supplier_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    supplier = dict(row)
+    supplier["statutory_eligible"] = bool(supplier["statutory_eligible"])
+    return supplier

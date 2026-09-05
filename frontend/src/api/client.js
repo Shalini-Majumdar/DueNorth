@@ -21,6 +21,8 @@ export const api = {
   getAuditLog: (params) =>
     client.get("/api/audit-log", { params }).then((r) => r.data),
   getFaq: () => client.get("/api/faq").then((r) => r.data),
+  onboard: (body) => client.post("/api/onboard", body).then((r) => r.data),
+  getSupplier: () => client.get("/api/supplier").then((r) => r.data),
   prefillDemand: (body) =>
     client.post("/api/escalation/prefill", body).then((r) => r.data),
   ingest: (file) => {

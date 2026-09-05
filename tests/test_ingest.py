@@ -90,3 +90,50 @@ def test_ingest_is_idempotent(fixtures_dir, tmp_path):
     assert len(v1) == len(v2) == 7
     assert len(q1) == len(q2) == 3
     assert len(pd.read_csv(q_path)) == 3
+
+
+def test_duplicate_invoice_id_quarantined(tmp_path):
+    p = tmp_path / "dupes.csv"
+    p.write_text(
+        "Invoice No,Customer,Amount\n"
+        "INV-1,Acme,1000\n"
+        "INV-2,Beta,2000\n"
+        "INV-1,Acme,1000\n",
+        encoding="utf-8",
+    )
+    valid, quarantine = ingest(str(p), str(tmp_path / "q.csv"))
+    assert len(valid) == 2
+    assert list(valid["invoice_id"]) == ["INV-1", "INV-2"]
+    assert len(quarantine) == 1
+    assert quarantine.loc[0, "quarantine_reason"] == "duplicate invoice_id"
+
+
+def test_duplicate_check_ignores_surrounding_whitespace(tmp_path):
+    p = tmp_path / "dupes_ws.csv"
+    p.write_text(
+        "Invoice No,Amount\nINV-1,1000\n  INV-1 ,1000\n", encoding="utf-8"
+    )
+    valid, quarantine = ingest(str(p), str(tmp_path / "q.csv"))
+    assert len(valid) == 1
+    assert len(quarantine) == 1
+
+
+def test_re_uploading_same_file_appended_quarantines_every_repeat(tmp_path):
+    """The whole point: a doubled export yields the original set, not twice it."""
+    rows = "".join(f"INV-{i},{1000 + i}\n" for i in range(5))
+    p = tmp_path / "doubled.csv"
+    p.write_text("Invoice No,Amount\n" + rows + rows, encoding="utf-8")
+    valid, quarantine = ingest(str(p), str(tmp_path / "q.csv"))
+    assert len(valid) == 5
+    assert len(quarantine) == 5
+    assert set(quarantine["quarantine_reason"]) == {"duplicate invoice_id"}
+
+
+def test_blank_invoice_id_rows_not_treated_as_duplicates_of_each_other(tmp_path):
+    p = tmp_path / "blanks.csv"
+    p.write_text(
+        "Invoice No,Amount\n,1000\n,2000\nINV-1,3000\n", encoding="utf-8"
+    )
+    valid, quarantine = ingest(str(p), str(tmp_path / "q.csv"))
+    assert len(valid) == 1
+    assert set(quarantine["quarantine_reason"]) == {"missing invoice_id"}

@@ -18,9 +18,11 @@ export default function Stepper({
   completeText = "Finish",
   className = "",
   canAdvance = () => true,
+  beforeAdvance = async () => true,
 }) {
   const [currentStep, setCurrentStep] = useState(initialStep);
   const [direction, setDirection] = useState(0);
+  const [busy, setBusy] = useState(false);
   const steps = Children.toArray(children);
   const total = steps.length;
   const isLast = currentStep === total;
@@ -36,8 +38,18 @@ export default function Stepper({
       go(currentStep - 1);
     }
   };
-  const next = () => {
-    if (!canAdvance(currentStep)) return;
+  // beforeAdvance lets a step run an async gate (e.g. the server-side Udyam
+  // check) and veto the transition by resolving false.
+  const next = async () => {
+    if (busy || !canAdvance(currentStep)) return;
+    setBusy(true);
+    let ok = true;
+    try {
+      ok = await beforeAdvance(currentStep);
+    } finally {
+      setBusy(false);
+    }
+    if (!ok) return;
     setDirection(1);
     isLast ? go(total + 1) : go(currentStep + 1);
   };
@@ -99,9 +111,9 @@ export default function Stepper({
             type="button"
             onClick={next}
             className="rounded-lg bg-jade-400 px-4 py-2 text-sm font-semibold text-jade-900 transition-colors hover:bg-jade-300 disabled:opacity-50"
-            disabled={!canAdvance(currentStep)}
+            disabled={busy || !canAdvance(currentStep)}
           >
-            {isLast ? completeText : nextButtonText}
+            {busy ? "Checking…" : isLast ? completeText : nextButtonText}
           </button>
         </div>
       )}

@@ -68,9 +68,11 @@ def ingest(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Ingest an invoice export into (valid_df, quarantine_df).
 
-    A row is quarantined if invoice_id is missing/empty, or amount is missing,
-    non-numeric, or <= 0. Quarantined rows are written to quarantine_path with a
-    "quarantine_reason" column. Never raises on bad row data.
+    A row is quarantined if invoice_id is missing/empty, amount is missing,
+    non-numeric, or <= 0, or the invoice_id repeats one already seen in this
+    file (the first occurrence is kept). Quarantined rows are written to
+    quarantine_path with a "quarantine_reason" column. Never raises on bad row
+    data.
     """
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
@@ -101,6 +103,16 @@ def ingest(
         reasons.append("; ".join(row_reasons))
 
     reason_series = pd.Series(reasons, index=df.index)
+
+    # Duplicate invoice_id: only meaningful for rows that are otherwise clean,
+    # so it runs after the field checks. keep="first" means the original row
+    # survives and every later re-upload of the same ID is quarantined.
+    ok_mask = reason_series == ""
+    if has_invoice_id and ok_mask.any():
+        keys = df.loc[ok_mask, "invoice_id"].astype(str).str.strip()
+        dup_index = keys.index[keys.duplicated(keep="first")]
+        reason_series.loc[dup_index] = "duplicate invoice_id"
+
     bad_mask = reason_series != ""
 
     valid_df = df.loc[~bad_mask].copy()

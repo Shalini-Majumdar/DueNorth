@@ -43,7 +43,11 @@ function EventRow({ e, open, onToggle }) {
         <span className="w-11 shrink-0 font-mono text-2xs tnum text-ink-faint">{e.ts?.slice(11, 16)}</span>
         <span className="text-[13px] text-ink-secondary group-hover:text-ink-primary">{meta.label}</span>
         <span className="font-mono text-2xs text-ink-faint">{e.invoice_id_masked}</span>
-        {e.razorpay_id ? (
+        {e.follow_up_days ? (
+          <span className="ml-auto hidden shrink-0 font-mono text-2xs text-ink-faint sm:inline">
+            next in {e.follow_up_days}d
+          </span>
+        ) : e.razorpay_id ? (
           <span className="ml-auto hidden font-mono text-2xs text-ink-faint sm:inline">{e.razorpay_id}</span>
         ) : null}
       </button>
@@ -77,6 +81,22 @@ function EventRow({ e, open, onToggle }) {
                   <StatusBadge tone={meta.tone} label={meta.label} />
                 </dd>
               </div>
+              {e.follow_up_days ? (
+                <>
+                  <div>
+                    <Eyebrow>PtP reliability</Eyebrow>
+                    <dd className="mt-1 font-mono text-2xs tnum text-ink-secondary">
+                      {e.ptp_reliability != null ? e.ptp_reliability.toFixed(2) : "—"}
+                    </dd>
+                  </div>
+                  <div>
+                    <Eyebrow>Next follow-up</Eyebrow>
+                    <dd className="mt-1 font-mono text-2xs tnum text-ink-secondary">
+                      {e.follow_up_on} · in {e.follow_up_days}d
+                    </dd>
+                  </div>
+                </>
+              ) : null}
               {e.razorpay_id ? (
                 <div className="col-span-2 sm:col-span-4">
                   <Eyebrow>Razorpay reference</Eyebrow>
